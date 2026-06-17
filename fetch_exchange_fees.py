@@ -4,6 +4,7 @@ import json
 import os
 from typing import Iterable, List, Mapping
 
+from exchange_fee.account_levels import apply_account_levels, build_account_level_rows
 from exchange_fee.clients import TARGET_ACCOUNTS, fetch_all_fee_records, fee_records_to_rows
 from exchange_fee.live_table import build_normalized_live_table
 from exchange_fee.reference_table import normalize_reference_table
@@ -16,6 +17,8 @@ DEFAULT_OUTPUT_JSON = os.path.join(BASE_DIR, "exchange_fee_snapshot.json")
 DEFAULT_REFERENCE_NORMALIZED = os.path.join(BASE_DIR, "tablefee.normalized.tsv")
 DEFAULT_LIVE_NORMALIZED_TSV = os.path.join(BASE_DIR, "exchange_fee.normalized.tsv")
 DEFAULT_LIVE_NORMALIZED_JSON = os.path.join(BASE_DIR, "exchange_fee.normalized.json")
+DEFAULT_ACCOUNT_LEVELS_TSV = os.path.join(BASE_DIR, "exchange_account_levels.tsv")
+DEFAULT_ACCOUNT_LEVELS_JSON = os.path.join(BASE_DIR, "exchange_account_levels.json")
 
 
 def write_tsv(path: str, rows: List[Mapping[str, str]]) -> None:
@@ -82,6 +85,16 @@ def main() -> None:
         default=DEFAULT_LIVE_NORMALIZED_JSON,
         help=f"Output path for the normalized live fee JSON. Default: {DEFAULT_LIVE_NORMALIZED_JSON}",
     )
+    parser.add_argument(
+        "--account-levels-tsv",
+        default=DEFAULT_ACCOUNT_LEVELS_TSV,
+        help=f"Output path for the account levels TSV. Default: {DEFAULT_ACCOUNT_LEVELS_TSV}",
+    )
+    parser.add_argument(
+        "--account-levels-json",
+        default=DEFAULT_ACCOUNT_LEVELS_JSON,
+        help=f"Output path for the account levels JSON. Default: {DEFAULT_ACCOUNT_LEVELS_JSON}",
+    )
     args = parser.parse_args()
 
     accounts = dict(TARGET_ACCOUNTS)
@@ -89,6 +102,8 @@ def main() -> None:
 
     reference_rows = normalize_reference_table(args.reference)
     fee_records = fetch_all_fee_records(accounts)
+    account_level_rows = build_account_level_rows(fee_records, reference_rows)
+    fee_records = apply_account_levels(fee_records, account_level_rows)
     fee_rows = fee_records_to_rows(fee_records)
     normalized_live_rows = build_normalized_live_table(fee_records, reference_rows)
 
@@ -97,6 +112,8 @@ def main() -> None:
     write_tsv(args.reference_output, reference_rows)
     write_tsv(args.normalized_output_tsv, normalized_live_rows)
     write_json(args.normalized_output_json, normalized_live_rows)
+    write_tsv(args.account_levels_tsv, account_level_rows)
+    write_json(args.account_levels_json, account_level_rows)
 
     ok_count = sum(1 for row in fee_rows if row["status"] == "ok")
     error_count = len(fee_rows) - ok_count
@@ -105,6 +122,8 @@ def main() -> None:
     print(f"Reference table written to  : {args.reference_output}")
     print(f"Normalized live TSV written : {args.normalized_output_tsv}")
     print(f"Normalized live JSON written: {args.normalized_output_json}")
+    print(f"Account levels TSV written  : {args.account_levels_tsv}")
+    print(f"Account levels JSON written : {args.account_levels_json}")
     print(f"Success rows: {ok_count}")
     print(f"Error rows  : {error_count}")
 

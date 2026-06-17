@@ -83,6 +83,25 @@ class BinanceClient(ExchangeClient):
     coin_futures_base = "https://dapi.binance.com"
     options_base = "https://eapi.binance.com"
 
+    def _query_account_level(self) -> str:
+        endpoints = [
+            (self.usdt_futures_base, "/fapi/v1/accountConfig", "feeTier"),
+            (self.usdt_futures_base, "/fapi/v2/account", "feeTier"),
+        ]
+        for base_url, path, field_name in endpoints:
+            try:
+                payload = self._signed_get(
+                    base_url,
+                    path,
+                    {"timestamp": str(int(time.time() * 1000))},
+                )
+                fee_tier = payload.get(field_name)
+                if fee_tier not in (None, ""):
+                    return f"V{fee_tier}"
+            except Exception:
+                continue
+        return ""
+
     def _signed_get(self, base_url: str, path: str, params: Dict[str, str]) -> Dict[str, object]:
         query = urlencode(params)
         secret = _get_required(self.credentials, "SECRET_KEY")
@@ -100,6 +119,7 @@ class BinanceClient(ExchangeClient):
 
     def fetch(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
+        account_level = self._query_account_level()
         targets = [
             QueryTarget("Spot", "BTCUSDT"),
             QueryTarget("USDT-M Futures", "BTCUSDT"),
@@ -131,7 +151,7 @@ class BinanceClient(ExchangeClient):
                         account=self.account,
                         product=target.product,
                         symbol=target.symbol,
-                        vip_level="",
+                        vip_level=account_level,
                         maker_rate=maker_rate,
                         taker_rate=taker_rate,
                         source="api",
@@ -159,7 +179,7 @@ class BinanceClient(ExchangeClient):
                         account=self.account,
                         product="Options",
                         symbol=str(item.get("underlying", "")),
-                        vip_level="",
+                        vip_level=account_level,
                         maker_rate=str(item.get("makerCommissionRate", "")),
                         taker_rate=str(item.get("takerCommissionRate", "")),
                         source="api",
