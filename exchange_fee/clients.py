@@ -247,7 +247,7 @@ class BybitClient(ExchangeClient):
 class BitgetClient(ExchangeClient):
     exchange = "bitget"
     base_url = "https://api.bitget.com"
-    classic_all_trade_rate_path = "/api/v2/common/all-trade-rate"
+    classic_trade_rate_path = "/api/v2/common/trade-rate"
     uta_fee_rate_path = "/api/v3/account/fee-rate"
 
     def _signed_get(self, path: str, params: Dict[str, str]) -> Dict[str, object]:
@@ -285,39 +285,6 @@ class BitgetClient(ExchangeClient):
         message = str(exc)
         return "40084" in message and "Classic Account mode" in message
 
-    @staticmethod
-    def _index_rows(payload: Dict[str, object]) -> Dict[str, Dict[str, object]]:
-        rows = payload.get("data", [])
-        if not isinstance(rows, list):
-            return {}
-        indexed: Dict[str, Dict[str, object]] = {}
-        for row in rows:
-            if isinstance(row, dict) and row.get("symbol"):
-                indexed[str(row["symbol"]).upper()] = row
-        return indexed
-
-    @staticmethod
-    def _pick_exact_or_uniform(
-        indexed_rows: Dict[str, Dict[str, object]],
-        symbol: str,
-    ) -> Dict[str, object] | None:
-        exact = indexed_rows.get(symbol.upper())
-        if exact is not None:
-            return exact
-        rows = list(indexed_rows.values())
-        if not rows:
-            return None
-        signatures = {
-            (
-                str(row.get("makerFeeRate", "")),
-                str(row.get("takerFeeRate", "")),
-            )
-            for row in rows
-        }
-        if len(signatures) == 1:
-            return rows[0]
-        return None
-
     def _success_record(
         self,
         *,
@@ -342,67 +309,49 @@ class BitgetClient(ExchangeClient):
             raw=payload_row,
         )
 
+    def _fetch_classic_trade_rate(self, symbol: str, business_type: str) -> Dict[str, object]:
+        attempts = [
+            {"symbol": symbol, "businessType": business_type},
+            {"symbol": symbol, "business": business_type},
+        ]
+        last_error: Exception | None = None
+        for params in attempts:
+            try:
+                return self._signed_get(self.classic_trade_rate_path, params)
+            except Exception as exc:
+                last_error = exc
+        if last_error is None:
+            raise RuntimeError("Unknown Bitget classic trade-rate error.")
+        raise last_error
+
     def _fetch_classic(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
         note = (
-            "Classic account fallback via /api/v2/common/all-trade-rate. "
+            "Classic account fallback via /api/v2/common/trade-rate. "
             "Bitget UTA fee endpoint is unavailable for Classic Account mode."
         )
 
-        try:
-            spot_payload = self._signed_get(self.classic_all_trade_rate_path, {"business": "spot"})
-            spot_rows = self._index_rows(spot_payload)
-            spot_row = self._pick_exact_or_uniform(spot_rows, "BTCUSDT")
-            if spot_row is None:
-                raise RuntimeError(f"BTCUSDT not found in classic spot trade rates: {spot_payload}")
-            records.append(
-                self._success_record(
-                    product="Spot",
-                    symbol="BTCUSDT",
-                    payload_row=spot_row,
-                    endpoint=self.classic_all_trade_rate_path,
-                    note=note,
-                )
-            )
-        except Exception as exc:
-            records.append(self.error_record("Spot", "BTCUSDT", self.classic_all_trade_rate_path, exc))
-
-        try:
-            mix_payload = self._signed_get(self.classic_all_trade_rate_path, {"business": "mix"})
-            mix_rows = self._index_rows(mix_payload)
-            targets = [
-                ("USDT-M Futures", "BTCUSDT"),
-                ("COIN-M Futures", "BTCUSD"),
-                ("USDC-M Futures", "BTCUSDC"),
-            ]
-            for product, symbol in targets:
-                row = self._pick_exact_or_uniform(mix_rows, symbol)
-                if row is None:
-                    records.append(
-                        self.error_record(
-                            product,
-                            symbol,
-                            self.classic_all_trade_rate_path,
-                            RuntimeError(f"{symbol} not found in classic mix trade rates."),
-                        )
-                    )
-                    continue
+        targets = [
+            ("Spot", "BTCUSDT", "spot"),
+            ("USDT-M Futures", "BTCUSDT", "mix"),
+            ("COIN-M Futures", "BTCUSD", "mix"),
+            ("USDC-M Futures", "BTCUSDC", "mix"),
+        ]
+        for product, symbol, business_type in targets:
+            try:
+                payload = self._fetch_classic_trade_rate(symbol, business_type)
+                row = payload.get("data", {})
                 records.append(
                     self._success_record(
                         product=product,
                         symbol=symbol,
-                        payload_row=row,
-                        endpoint=self.classic_all_trade_rate_path,
+                        payload_row=row if isinstance(row, dict) else {},
+                        endpoint=self.classic_trade_rate_path,
                         note=note,
                     )
                 )
-        except Exception as exc:
-            for product, symbol in [
-                ("USDT-M Futures", "BTCUSDT"),
-                ("COIN-M Futures", "BTCUSD"),
-                ("USDC-M Futures", "BTCUSDC"),
-            ]:
-                records.append(self.error_record(product, symbol, self.classic_all_trade_rate_path, exc))
+            except Exception as exc:
+                records.append(self.error_record(product, symbol, self.classic_trade_rate_path, exc))
         return records
 
     def _fetch_uta(self, first_payload: Dict[str, object]) -> List[FeeRecord]:
@@ -525,8 +474,30 @@ class GateClient(ExchangeClient):
                     raw=match,
                 )
             )
-        except Exception as exc:
-            records.append(self.error_record("Spot", "BTC_USDT", "/spot/batch_fee", exc))
+        except Exception:
+            try:
+                payload = self._signed_get("/spot/batch_fee", {"currency_pairs": "BTC_USDT"})
+                items = payload if isinstance(payload, list) else [payload]
+                match = items[0] if items and isinstance(items[0], dict) else None
+                if not isinstance(match, dict):
+                    raise RuntimeError(f"Unexpected Gate spot payload: {payload}")
+                records.append(
+                    FeeRecord.success(
+                        exchange=self.exchange,
+                        account=self.account,
+                        product="Spot",
+                        symbol=str(match.get("currency_pair", "BTC_USDT")),
+                        vip_level=str(match.get("user_tier", "")),
+                        maker_rate=self._pick_rate(match, "maker_fee", "maker_fee_rate"),
+                        taker_rate=self._pick_rate(match, "taker_fee", "taker_fee_rate"),
+                        source="api",
+                        endpoint="/spot/batch_fee",
+                        note="Used currency_pairs=BTC_USDT because Gate spot batch_fee requires this parameter.",
+                        raw=match,
+                    )
+                )
+            except Exception as exc:
+                records.append(self.error_record("Spot", "BTC_USDT", "/spot/batch_fee", exc))
 
         for settle, product in [("usdt", "Futures -USDT Prep"), ("btc", "Futures -BTC Prep")]:
             path = f"/futures/{settle}/fee"
