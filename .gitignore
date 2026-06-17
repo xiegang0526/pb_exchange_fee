@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+exchange_fee_snapshot.tsv
+exchange_fee_snapshot.json
+tablefee.normalized.tsv

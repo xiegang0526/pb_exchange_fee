@@ -1,0 +1,89 @@
+Exchange	VIP Tier	Trading	Fee Type	Fee rate
+Binance	V9	Spot	Maker	0.00000%
+			Taker	0.01725%
+		USDT-M Futures	Maker	-0.00300%
+			Taker	0.01530%
+		COIN-M Futrues	Maker	0.00000%
+			Taker	0.01700%
+		Options	Maker	0.02400%
+			Taker	0.02400%
+OKX	VIP 4	Spot 	Maker	0.03000%
+			Taker	0.04500%
+		Futures	Maker	0.00800%
+			Taker	0.02700%
+		Options	Maker	0.02000%
+			Taker	0.02500%
+Bybit	Pro2 MM	Spot	Maker	-0.00100%
+			Taker	0.05000%
+		Futures	Maker	0.01000%
+			Taker	0.03200%
+		Options	Maker	0.00500%
+			Taker	0.01500%
+		Fiat Pairs on Spot	Maker	0.10000%
+			Taker	0.15000%
+Bitget	VIP 6	Spot	Maker	0.02000%
+			Taker	0.03500%
+		USDT-M Futures 	Maker	0.00800%
+			Taker	0.03000%
+		COIN-M Futures 	Maker	0.00800%
+			Taker	0.03000%
+		USDC-M Futures 	Maker	0.00800%
+			Taker	0.03000%
+Gate	VIP 8	Spot	Maker	0.07500%
+			Taker	0.08000%
+		Futures -USDT Prep	Maker	0.01400%
+			Taker	0.03500%
+		Futures -BTC Prep	Maker	0.01000%
+			Taker	0.03400%
+		Futures-USDT Delivery	Maker	-0.01500%
+			Taker	0.01600%
+		Options	Maker	0.01000%
+			Taker	0.01500%
+Deribit	VIP 5 	BTC / ETH Futrue	Maker	-0.01000%
+			Taker	0.02350%
+		BTC / ETH Perpetual	Maker	-0.01000%
+			Taker	0.02350%
+		BTC / ETH Option	Maker	33.33000%
+			Taker	33.33000%
+		USDC Future	Maker	-0.01000%
+			Taker	0.02350%
+		USDC Perpetual	Maker	-0.01000%
+			Taker	0.02350%
+Bybit-oasis	Pro 3 ,mm	Spot	Maker	-0.00100%
+			Taker	0.04000%
+		Fiat Pairs	Maker	0.03000%
+			Taker	0.04500%
+		Futrues	Maker	0.00750%
+			Taker	0.03200%
+		Options	Maker	0.00500%
+			Taker	0.01500%
+Bitget-oasis	Pro 2	Spot	Maker	0.02000%
+			Taker	0.02100%
+		USDT-M Futures 	Maker	-0.00500%
+			Taker	0.02600%
+		COIN-M Futures 	Maker	-0.00500%
+			Taker	0.02600%
+		USDC-M Futures 	Maker	-0.00500%
+			Taker	0.02600%
+KuCoin	VIP 5	Spot	Maker	0.03500%
+			Taker	0.05500%
+		Futures	Maker	0.00600%
+			Taker	0.04800%
+Kraken	Regular User	Spot	Maker	0.25000%
+			Taker	0.40000%
+		Futures	Maker	-0.02000%
+			Taker	0.01000%
+Coinbase	Intro 1	Spot	Maker	0.60000%
+			Taker	1.20000%
+		USDC-M Futures 	Maker	-0.00500%
+			Taker	0.02600%
+KuCoin	VIP 8	Spot	Maker	-0.00500%
+			Taker	0.02500%
+		Futures	Maker	0.00000%
+			Taker	0.02500%
+Kraken	Regular User	Spot	Maker	0.00000%
+			Taker	0.01000%
+		Futures	Maker	0.00000%
+			Taker	0.02000%
+Coinbase	Intro 1	Spot	Maker	0.00000%
+			Taker	0.02000%
