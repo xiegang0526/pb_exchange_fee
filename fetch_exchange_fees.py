@@ -5,6 +5,7 @@ import os
 from typing import Iterable, List, Mapping
 
 from exchange_fee.clients import TARGET_ACCOUNTS, fetch_all_fee_records, fee_records_to_rows
+from exchange_fee.live_table import build_normalized_live_table
 from exchange_fee.reference_table import normalize_reference_table
 
 
@@ -13,6 +14,8 @@ DEFAULT_REFERENCE_PATH = os.path.join(BASE_DIR, "tablefee.tsv")
 DEFAULT_OUTPUT_TSV = os.path.join(BASE_DIR, "exchange_fee_snapshot.tsv")
 DEFAULT_OUTPUT_JSON = os.path.join(BASE_DIR, "exchange_fee_snapshot.json")
 DEFAULT_REFERENCE_NORMALIZED = os.path.join(BASE_DIR, "tablefee.normalized.tsv")
+DEFAULT_LIVE_NORMALIZED_TSV = os.path.join(BASE_DIR, "exchange_fee.normalized.tsv")
+DEFAULT_LIVE_NORMALIZED_JSON = os.path.join(BASE_DIR, "exchange_fee.normalized.json")
 
 
 def write_tsv(path: str, rows: List[Mapping[str, str]]) -> None:
@@ -69,24 +72,39 @@ def main() -> None:
         default=DEFAULT_REFERENCE_NORMALIZED,
         help=f"Output path for the normalized reference table TSV. Default: {DEFAULT_REFERENCE_NORMALIZED}",
     )
+    parser.add_argument(
+        "--normalized-output-tsv",
+        default=DEFAULT_LIVE_NORMALIZED_TSV,
+        help=f"Output path for the normalized live fee TSV. Default: {DEFAULT_LIVE_NORMALIZED_TSV}",
+    )
+    parser.add_argument(
+        "--normalized-output-json",
+        default=DEFAULT_LIVE_NORMALIZED_JSON,
+        help=f"Output path for the normalized live fee JSON. Default: {DEFAULT_LIVE_NORMALIZED_JSON}",
+    )
     args = parser.parse_args()
 
     accounts = dict(TARGET_ACCOUNTS)
     accounts.update(parse_account_overrides(args.account))
 
+    reference_rows = normalize_reference_table(args.reference)
     fee_records = fetch_all_fee_records(accounts)
     fee_rows = fee_records_to_rows(fee_records)
+    normalized_live_rows = build_normalized_live_table(fee_records, reference_rows)
+
     write_tsv(args.output_tsv, fee_rows)
     write_json(args.output_json, fee_rows)
-
-    reference_rows = normalize_reference_table(args.reference)
     write_tsv(args.reference_output, reference_rows)
+    write_tsv(args.normalized_output_tsv, normalized_live_rows)
+    write_json(args.normalized_output_json, normalized_live_rows)
 
     ok_count = sum(1 for row in fee_rows if row["status"] == "ok")
     error_count = len(fee_rows) - ok_count
     print(f"Live fee snapshot written to: {args.output_tsv}")
     print(f"Live fee JSON written to    : {args.output_json}")
     print(f"Reference table written to  : {args.reference_output}")
+    print(f"Normalized live TSV written : {args.normalized_output_tsv}")
+    print(f"Normalized live JSON written: {args.normalized_output_json}")
     print(f"Success rows: {ok_count}")
     print(f"Error rows  : {error_count}")
 
