@@ -14,6 +14,7 @@ import requests
 MAX_TABLE_ROWS_PER_MESSAGE = 99
 MAX_CHANGE_LINES_IN_MESSAGE = 20
 MAX_TEXT_ROWS_PER_MESSAGE = 40
+DEFAULT_GENERIC_TOPIC = "pb-exchange-fee"
 
 
 def format_report_date(dt: datetime) -> str:
@@ -29,7 +30,7 @@ def _html_report_path(base_dir: str, report_date: datetime) -> str:
 
 
 def _payload_archive_path(base_dir: str, report_date: datetime) -> str:
-    return os.path.join(base_dir, "history", f"{report_date.date().isoformat()}.slack_payloads.json")
+    return os.path.join(base_dir, "history", f"{report_date.date().isoformat()}.webhook_payloads.json")
 
 
 def load_json_file(path: str) -> list[dict[str, str]] | None:
@@ -156,11 +157,11 @@ def _render_text_table(rows: list[list[str]]) -> str:
     return "\n".join(rendered_lines)
 
 
-def build_fallback_text_payloads(
+def build_text_report_messages(
     normalized_rows: list[dict[str, str]],
     changes: list[str],
     report_time: datetime,
-) -> list[dict[str, object]]:
+) -> list[str]:
     normalized_rows = _filter_normalized_rows(normalized_rows)
     flattened_rows = flatten_table_rows(normalized_rows)
     header_row = flattened_rows[0]
@@ -170,7 +171,7 @@ def build_fallback_text_payloads(
         for index in range(0, len(data_rows), MAX_TEXT_ROWS_PER_MESSAGE * 2)
     ] or [[]]
 
-    payloads: list[dict[str, object]] = []
+    messages: list[str] = []
     total_changes = len(changes)
     preview_changes = changes[:MAX_CHANGE_LINES_IN_MESSAGE]
 
@@ -209,7 +210,44 @@ def build_fallback_text_payloads(
             parts.append(table_text)
             parts.append("```")
 
-        payloads.append({"text": "\n".join(parts)})
+        messages.append("\n".join(parts))
+
+    return messages
+
+
+def build_generic_webhook_payloads(
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+    report_time: datetime,
+    *,
+    topic: str = DEFAULT_GENERIC_TOPIC,
+) -> list[dict[str, object]]:
+    descriptions = build_text_report_messages(normalized_rows, changes, report_time)
+    report_date = report_time.date().isoformat()
+    has_valid_rows = bool(_filter_normalized_rows(normalized_rows))
+    urgency = "p1" if not has_valid_rows else "p2"
+
+    payloads: list[dict[str, object]] = []
+    for index, description in enumerate(descriptions, start=1):
+        chunk_suffix = f" ({index}/{len(descriptions)})" if len(descriptions) > 1 else ""
+        title = f"Exchange Fee Daily Report{chunk_suffix}"
+        payloads.append(
+            {
+                "title": title,
+                "srcType": "generic",
+                "urgency": urgency,
+                "description": description,
+                "labels": {
+                    "env": "production",
+                    "app": "pb-exchange-fee",
+                    "report_date": report_date,
+                    "topic": topic,
+                },
+                "groupKey": f"pb_exchange_fee:{report_date}:{index}",
+                "groupLabels": ["app", "env", "report_date"],
+                "topic": topic,
+            }
+        )
 
     return payloads
 
@@ -342,36 +380,6 @@ def send_webhook_payloads(webhook_url: str, payloads: Iterable[dict[str, object]
         )
         response.raise_for_status()
     return responses
-
-
-def send_report_with_fallback(
-    webhook_url: str,
-    normalized_rows: list[dict[str, str]],
-    changes: list[str],
-    report_time: datetime,
-    primary_payloads: list[dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
-    primary_payloads = primary_payloads or build_slack_payloads(normalized_rows, changes, report_time)
-    try:
-        responses = send_webhook_payloads(webhook_url, primary_payloads)
-        for response in responses:
-            response["payload_format"] = "blocks"
-        return responses
-    except requests.HTTPError as exc:
-        fallback_payloads = build_fallback_text_payloads(normalized_rows, changes, report_time)
-        fallback_responses = send_webhook_payloads(webhook_url, fallback_payloads)
-        result: list[dict[str, object]] = [
-            {
-                "payload_format": "blocks",
-                "status_code": exc.response.status_code if exc.response is not None else "",
-                "body": (exc.response.text[:1000] if exc.response is not None else str(exc)) or "",
-                "note": "Primary Slack blocks payload failed; fallback plain-text payload sent.",
-            }
-        ]
-        for response in fallback_responses:
-            response["payload_format"] = "text_fallback"
-        result.extend(fallback_responses)
-        return result
 
 
 def render_html_report(
@@ -587,7 +595,7 @@ def generate_report_artifacts(
     previous_history_path = _history_path(base_dir, previous_time)
     previous_rows = load_json_file(previous_history_path)
     changes = diff_normalized_rows(normalized_rows, previous_rows)
-    payloads = build_slack_payloads(normalized_rows, changes, report_time)
+    payloads = build_generic_webhook_payloads(normalized_rows, changes, report_time)
     html_report = render_html_report(normalized_rows, changes, report_time)
     html_report_path = _html_report_path(base_dir, report_time)
     os.makedirs(os.path.dirname(html_report_path), exist_ok=True)
