@@ -14,6 +14,7 @@ import requests
 MAX_TABLE_ROWS_PER_MESSAGE = 99
 MAX_CHANGE_LINES_IN_MESSAGE = 20
 MAX_DESCRIPTION_CHARS = 2800
+MAX_EXCHANGE_SECTIONS_PER_MESSAGE = 3
 DEFAULT_GENERIC_TOPIC = "pb-exchange-fee"
 
 
@@ -244,19 +245,19 @@ def build_text_report_messages(
         f"Rows: {len(normalized_rows)} normalized products",
         f"Changes vs yesterday: {total_changes}",
     ]
-    sections: list[str] = []
+    preamble_sections: list[str] = []
 
     if not normalized_rows:
-        sections.append(
+        preamble_sections.append(
             "Data status\n"
             "No valid fee rows were generated today. Please check account credentials, Redis access, or upstream exchange APIs."
         )
 
     if total_changes:
         change_lines = ["Fee changes vs yesterday", *[f"- {line}" for line in changes]]
-        sections.append("\n".join(change_lines))
+        preamble_sections.append("\n".join(change_lines))
     else:
-        sections.append(
+        preamble_sections.append(
             "Fee changes vs yesterday\n"
             + (
                 "No valid fee rows today, so day-over-day diff was skipped."
@@ -265,8 +266,19 @@ def build_text_report_messages(
             )
         )
 
-    sections.extend(_build_exchange_sections(normalized_rows))
-    messages = _chunk_text_sections(sections, intro_lines)
+    exchange_sections = _build_exchange_sections(normalized_rows)
+
+    if not exchange_sections:
+        messages = _chunk_text_sections(preamble_sections, intro_lines)
+    else:
+        messages = []
+        for index in range(0, len(exchange_sections), MAX_EXCHANGE_SECTIONS_PER_MESSAGE):
+            exchange_chunk = exchange_sections[index : index + MAX_EXCHANGE_SECTIONS_PER_MESSAGE]
+            if index == 0:
+                chunk_sections = [*preamble_sections, *exchange_chunk]
+            else:
+                chunk_sections = exchange_chunk
+            messages.extend(_chunk_text_sections(chunk_sections, intro_lines))
 
     if len(messages) <= 1:
         return messages
