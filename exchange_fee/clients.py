@@ -178,24 +178,42 @@ class BinanceClient(ExchangeClient):
                 "/eapi/v1/commission",
                 {"timestamp": str(int(time.time() * 1000))},
             )
-            items = payload if isinstance(payload, list) else []
+            if isinstance(payload, dict):
+                items = payload.get("commissions", [])
+            elif isinstance(payload, list):
+                items = payload
+            else:
+                items = []
             if not items:
                 raise RuntimeError(f"Unexpected options payload: {payload}")
-            for item in items:
-                records.append(
-                    FeeRecord.success(
-                        exchange=self.exchange,
-                        account=self.account,
-                        product="Options",
-                        symbol=str(item.get("underlying", "")),
-                        vip_level=account_level,
-                        maker_rate=str(item.get("makerCommissionRate", "")),
-                        taker_rate=str(item.get("takerCommissionRate", "")),
-                        source="api",
-                        endpoint="/eapi/v1/commission",
-                        raw=item,
-                    )
+            target = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("underlying", "")).upper() == "BTCUSDT"
+                ),
+                items[0],
+            )
+            if not isinstance(target, dict):
+                raise RuntimeError(f"Unexpected options payload: {payload}")
+            records.append(
+                FeeRecord.success(
+                    exchange=self.exchange,
+                    account=self.account,
+                    product="Options",
+                    symbol=str(target.get("underlying", "BTCUSDT")),
+                    vip_level=account_level,
+                    maker_rate=str(
+                        target.get("makerCommissionRate", target.get("makerFee", ""))
+                    ),
+                    taker_rate=str(
+                        target.get("takerCommissionRate", target.get("takerFee", ""))
+                    ),
+                    source="api",
+                    endpoint="/eapi/v1/commission",
+                    raw=target,
                 )
+            )
         except Exception as exc:
             records.append(self.error_record("Options", "", "/eapi/v1/commission", exc))
         return records
