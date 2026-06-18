@@ -122,6 +122,7 @@ def build_account_level_rows(
 
         level_rows.append(
             {
+                "exchange_key": exchange,
                 "exchange": display_exchange,
                 "account": account,
                 "account_level": chosen_level,

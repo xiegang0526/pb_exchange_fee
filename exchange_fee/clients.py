@@ -19,12 +19,14 @@ from .models import FeeRecord
 TARGET_ACCOUNTS = {
     "bitget": "mpusstockbg28",
     "bybit": "mpusstockbybit45",
-    "binance": "mpusstockbn65",
+    "binance": "mpbncrossarb85",
     "gate": "mpusstockgate52",
     "kucoin": "mpusstockkucoin23",
     "okex": "mpusstockokx45",
     "deribit": "mpusstockderibit15",
     "coinbase": "mpflyottercoinb07",
+    "krakenspot": "mpusstockkraken14",
+    "krakenswap": "mpusstockkraken14",
 }
 
 
@@ -52,6 +54,13 @@ def _get_required(credentials: Dict[str, str], *names: str) -> str:
         if value:
             return value
     raise KeyError(f"Missing credential field: {', '.join(names)}")
+
+
+def _percent_string_to_decimal(rate_percent: str) -> str:
+    cleaned = str(rate_percent).strip()
+    if cleaned == "":
+        return ""
+    return f"{float(cleaned) / 100:.8f}".rstrip("0").rstrip(".")
 
 
 class ExchangeClient:
@@ -822,6 +831,184 @@ class CoinbaseClient(ExchangeClient):
             return [self.error_record("Spot", "ALL", path, exc)]
 
 
+class KrakenSpotClient(ExchangeClient):
+    exchange = "krakenspot"
+    base_url = "https://api.kraken.com"
+
+    def _signed_post(self, path: str, data: Dict[str, str]) -> Dict[str, object]:
+        nonce = str(int(time.time() * 1000))
+        payload = {"nonce": nonce, **data}
+        post_data = urlencode(payload)
+        secret = base64.b64decode(_get_required(self.credentials, "SECRET_KEY"))
+        sha256 = hashlib.sha256((nonce + post_data).encode()).digest()
+        message = path.encode() + sha256
+        signature = base64.b64encode(hmac.new(secret, message, hashlib.sha512).digest()).decode()
+        headers = {
+            "API-Key": _get_required(self.credentials, "ACCESS_KEY"),
+            "API-Sign": signature,
+            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        }
+        response = self.session.post(
+            f"{self.base_url}{path}",
+            data=payload,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(_compact_error(response))
+        data = response.json()
+        if data.get("error"):
+            raise RuntimeError(str(data))
+        return data
+
+    def fetch(self) -> List[FeeRecord]:
+        path = "/0/private/TradeVolume"
+        try:
+            payload = self._signed_post(path, {"pair": "XXBTZUSD"})
+            result = payload.get("result", {})
+            fees = result.get("fees", {})
+            fees_maker = result.get("fees_maker", {})
+            row = fees.get("XXBTZUSD", {})
+            maker_row = fees_maker.get("XXBTZUSD", {})
+            if not isinstance(row, dict) or not isinstance(maker_row, dict):
+                raise RuntimeError(f"Unexpected Kraken spot TradeVolume payload: {payload}")
+
+            maker_rate = _percent_string_to_decimal(str(maker_row.get("fee", "")))
+            taker_rate = _percent_string_to_decimal(str(row.get("fee", "")))
+            tier_volume = str(row.get("tier_volume", ""))
+            note = (
+                "Kraken Spot uses TradeVolume; fee fields are percentages and were converted to decimal rates."
+            )
+            vip_level = f"30D Volume {tier_volume} USD" if tier_volume else ""
+            return [
+                FeeRecord.success(
+                    exchange=self.exchange,
+                    account=self.account,
+                    product="Spot",
+                    symbol="XXBTZUSD",
+                    vip_level=vip_level,
+                    maker_rate=maker_rate,
+                    taker_rate=taker_rate,
+                    source="api",
+                    endpoint=path,
+                    note=note,
+                    raw=result,
+                )
+            ]
+        except Exception as exc:
+            return [self.error_record("Spot", "XXBTZUSD", path, exc)]
+
+
+class KrakenSwapClient(ExchangeClient):
+    exchange = "krakenswap"
+    base_url = "https://futures.kraken.com"
+
+    def _signed_get(self, path: str, params: Dict[str, str] | None = None) -> Dict[str, object]:
+        params = params or {}
+        nonce = str(int(time.time() * 1000))
+        post_data = urlencode(params)
+        endpoint_path = f"/derivatives/api/v3{path}"
+        secret = base64.b64decode(_get_required(self.credentials, "SECRET_KEY"))
+        payload_to_hash = f"{post_data}{nonce}{endpoint_path}".encode()
+        digest = hashlib.sha256(payload_to_hash).digest()
+        authent = base64.b64encode(hmac.new(secret, digest, hashlib.sha512).digest()).decode()
+        headers = {
+            "APIKey": _get_required(self.credentials, "ACCESS_KEY"),
+            "Authent": authent,
+            "Nonce": nonce,
+        }
+        response = self.session.get(
+            f"{self.base_url}{endpoint_path}",
+            params=params,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(_compact_error(response))
+        data = response.json()
+        if data.get("result") != "success":
+            raise RuntimeError(str(data))
+        return data
+
+    @staticmethod
+    def _pick_active_tier(tiers: List[Dict[str, object]], usd_volume: float) -> Dict[str, object] | None:
+        active: Dict[str, object] | None = None
+        active_threshold = float("-inf")
+        for tier in tiers:
+            threshold = float(tier.get("usdVolume", 0))
+            if threshold <= usd_volume and threshold >= active_threshold:
+                active = tier
+                active_threshold = threshold
+        return active
+
+    def fetch(self) -> List[FeeRecord]:
+        schedule_path = "/feeschedules"
+        volumes_path = "/feeschedules/volumes"
+        try:
+            schedules_payload = self._signed_get(schedule_path)
+            volumes_payload = self._signed_get(volumes_path)
+            schedules = schedules_payload.get("feeSchedules", [])
+            volumes_by_uid = volumes_payload.get("volumesByFeeSchedule", {})
+            if not isinstance(schedules, list) or not isinstance(volumes_by_uid, dict):
+                raise RuntimeError(
+                    f"Unexpected Kraken futures fee payloads: schedules={schedules_payload}, volumes={volumes_payload}"
+                )
+
+            candidates = [
+                (uid, float(volume))
+                for uid, volume in volumes_by_uid.items()
+            ]
+            if not candidates:
+                raise RuntimeError("No Kraken futures fee schedule volume found for this account.")
+
+            schedule_uid, usd_volume = max(candidates, key=lambda item: item[1])
+            schedule = next(
+                (item for item in schedules if isinstance(item, dict) and item.get("uid") == schedule_uid),
+                None,
+            )
+            if not isinstance(schedule, dict):
+                raise RuntimeError(f"Kraken futures fee schedule UID {schedule_uid} not found in /feeschedules.")
+
+            tiers = schedule.get("tiers", [])
+            if not isinstance(tiers, list):
+                raise RuntimeError(f"Unexpected Kraken futures tiers payload: {schedule}")
+            active_tier = self._pick_active_tier(tiers, usd_volume)
+            if active_tier is None:
+                raise RuntimeError(
+                    f"Unable to map Kraken futures volume {usd_volume} to a fee tier in schedule {schedule_uid}."
+                )
+
+            maker_rate = _percent_string_to_decimal(str(active_tier.get("makerFee", "")))
+            taker_rate = _percent_string_to_decimal(str(active_tier.get("takerFee", "")))
+            vip_level = str(schedule.get("name", ""))
+            note = (
+                "Kraken Futures uses deprecated fee schedule endpoints before 2026-06-22; "
+                "makerFee/takerFee are percentages and were converted to decimal rates."
+            )
+            raw = {
+                "schedule": schedule,
+                "activeTier": active_tier,
+                "volume": usd_volume,
+            }
+            return [
+                FeeRecord.success(
+                    exchange=self.exchange,
+                    account=self.account,
+                    product="Futures",
+                    symbol="ALL",
+                    vip_level=vip_level,
+                    maker_rate=maker_rate,
+                    taker_rate=taker_rate,
+                    source="api",
+                    endpoint=volumes_path,
+                    note=note,
+                    raw=raw,
+                )
+            ]
+        except Exception as exc:
+            return [self.error_record("Futures", "ALL", volumes_path, exc)]
+
+
 CLIENTS = {
     "binance": BinanceClient,
     "bybit": BybitClient,
@@ -831,6 +1018,8 @@ CLIENTS = {
     "okex": OKXClient,
     "deribit": DeribitClient,
     "coinbase": CoinbaseClient,
+    "krakenspot": KrakenSpotClient,
+    "krakenswap": KrakenSwapClient,
 }
 
 

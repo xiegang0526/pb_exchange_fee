@@ -15,6 +15,8 @@ DISPLAY_EXCHANGE = {
     "kucoin": "KuCoin",
     "deribit": "Deribit",
     "coinbase": "Coinbase",
+    "krakenspot": "Kraken",
+    "krakenswap": "Kraken",
 }
 
 
@@ -38,6 +40,8 @@ PREFERRED_SYMBOLS = {
     ("okex", "Futures"): ["BTC-USD"],
     ("okex", "Options"): ["BTC-USD"],
     ("coinbase", "Spot"): ["ALL"],
+    ("krakenspot", "Spot"): ["XXBTZUSD"],
+    ("krakenswap", "Futures"): ["ALL"],
 }
 
 
