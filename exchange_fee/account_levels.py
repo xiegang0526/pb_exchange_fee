@@ -43,6 +43,10 @@ def _normalize_direct_level(exchange: str, level: str) -> str:
         return cleaned if cleaned.startswith("V") else (f"V{cleaned}" if cleaned.isdigit() else cleaned)
     if exchange in {"gate", "kucoin", "bitget"}:
         return cleaned if upper.startswith("VIP") else (f"VIP {cleaned}" if cleaned.isdigit() else cleaned)
+    if exchange == "deribit":
+        if upper.startswith("VIP") and cleaned[3:].isdigit():
+            return f"VIP {cleaned[3:]}"
+        return cleaned
     if exchange == "coinbase":
         return cleaned.replace("_", " ").title()
     if exchange == "bybit":

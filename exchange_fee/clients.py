@@ -741,6 +741,13 @@ class OKXClient(ExchangeClient):
 class DeribitClient(ExchangeClient):
     exchange = "deribit"
     base_url = "https://www.deribit.com/api/v2"
+    preferred_products = {
+        "BTC / ETH Futrue",
+        "BTC / ETH Perpetual",
+        "BTC / ETH Option",
+        "USDC Future",
+        "USDC Perpetual",
+    }
 
     def _access_token(self) -> str:
         params = {
@@ -840,6 +847,7 @@ class DeribitClient(ExchangeClient):
 
     def fetch(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
+        seen_products: set[str] = set()
         try:
             access_token = self._access_token()
         except Exception as exc:
@@ -853,7 +861,13 @@ class DeribitClient(ExchangeClient):
                 row = payload.get("result", {})
                 parsed_rows = self._build_fee_records_from_summary(self.account, row, path)
                 if parsed_rows:
-                    records.extend(parsed_rows)
+                    for parsed_row in parsed_rows:
+                        if parsed_row.product not in self.preferred_products:
+                            continue
+                        if parsed_row.product in seen_products:
+                            continue
+                        seen_products.add(parsed_row.product)
+                        records.append(parsed_row)
                     continue
                 records.append(
                     FeeRecord.success(
