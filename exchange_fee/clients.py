@@ -475,18 +475,39 @@ class GateClient(ExchangeClient):
                 return str(row[name])
         return ""
 
+    @staticmethod
+    def _extract_symbol_row(payload: object, symbol: str) -> Dict[str, object] | None:
+        if isinstance(payload, dict):
+            direct = payload.get(symbol)
+            if isinstance(direct, dict):
+                return {
+                    **direct,
+                    "currency_pair": str(direct.get("currency_pair", symbol)),
+                    "_symbol_key": symbol,
+                }
+            if "currency_pair" in payload:
+                return payload
+            dict_values = [(key, value) for key, value in payload.items() if isinstance(value, dict)]
+            if len(dict_values) == 1:
+                key, value = dict_values[0]
+                return {
+                    **value,
+                    "currency_pair": str(value.get("currency_pair", key)),
+                    "_symbol_key": key,
+                }
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict) and item.get("currency_pair") == symbol:
+                    return item
+            if payload and isinstance(payload[0], dict):
+                return payload[0]
+        return None
+
     def fetch(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
         try:
             payload = self._signed_get("/spot/batch_fee")
-            items = payload if isinstance(payload, list) else [payload]
-            match = None
-            for item in items:
-                if isinstance(item, dict) and item.get("currency_pair") == "BTC_USDT":
-                    match = item
-                    break
-            if match is None and items and isinstance(items[0], dict):
-                match = items[0]
+            match = self._extract_symbol_row(payload, "BTC_USDT")
             if not isinstance(match, dict):
                 raise RuntimeError(f"Unexpected Gate spot payload: {payload}")
             records.append(
@@ -494,7 +515,7 @@ class GateClient(ExchangeClient):
                     exchange=self.exchange,
                     account=self.account,
                     product="Spot",
-                    symbol=str(match.get("currency_pair", "BTC_USDT")),
+                    symbol=str(match.get("currency_pair", match.get("_symbol_key", "BTC_USDT"))),
                     vip_level=str(match.get("user_tier", "")),
                     maker_rate=self._pick_rate(match, "maker_fee", "maker_fee_rate"),
                     taker_rate=self._pick_rate(match, "taker_fee", "taker_fee_rate"),
@@ -506,8 +527,7 @@ class GateClient(ExchangeClient):
         except Exception:
             try:
                 payload = self._signed_get("/spot/batch_fee", {"currency_pairs": "BTC_USDT"})
-                items = payload if isinstance(payload, list) else [payload]
-                match = items[0] if items and isinstance(items[0], dict) else None
+                match = self._extract_symbol_row(payload, "BTC_USDT")
                 if not isinstance(match, dict):
                     raise RuntimeError(f"Unexpected Gate spot payload: {payload}")
                 records.append(
@@ -515,7 +535,7 @@ class GateClient(ExchangeClient):
                         exchange=self.exchange,
                         account=self.account,
                         product="Spot",
-                        symbol=str(match.get("currency_pair", "BTC_USDT")),
+                        symbol=str(match.get("currency_pair", match.get("_symbol_key", "BTC_USDT"))),
                         vip_level=str(match.get("user_tier", "")),
                         maker_rate=self._pick_rate(match, "maker_fee", "maker_fee_rate"),
                         taker_rate=self._pick_rate(match, "taker_fee", "taker_fee_rate"),
@@ -528,28 +548,32 @@ class GateClient(ExchangeClient):
             except Exception as exc:
                 records.append(self.error_record("Spot", "BTC_USDT", "/spot/batch_fee", exc))
 
-        for settle, product in [("usdt", "Futures -USDT Prep"), ("btc", "Futures -BTC Prep")]:
+        for settle, product, symbol in [
+            ("usdt", "Futures -USDT Prep", "BTC_USDT"),
+            ("btc", "Futures -BTC Prep", "BTC_USD"),
+        ]:
             path = f"/futures/{settle}/fee"
             try:
                 payload = self._signed_get(path)
-                if not isinstance(payload, dict):
+                row = self._extract_symbol_row(payload, symbol)
+                if not isinstance(row, dict):
                     raise RuntimeError(f"Unexpected Gate futures payload: {payload}")
                 records.append(
                     FeeRecord.success(
                         exchange=self.exchange,
                         account=self.account,
                         product=product,
-                        symbol=settle.upper(),
-                        vip_level=str(payload.get("user_tier", "")),
-                        maker_rate=self._pick_rate(payload, "maker_fee", "maker_fee_rate"),
-                        taker_rate=self._pick_rate(payload, "taker_fee", "taker_fee_rate"),
+                        symbol=str(row.get("currency_pair", row.get("_symbol_key", symbol))),
+                        vip_level=str(row.get("user_tier", "")),
+                        maker_rate=self._pick_rate(row, "maker_fee", "maker_fee_rate"),
+                        taker_rate=self._pick_rate(row, "taker_fee", "taker_fee_rate"),
                         source="api",
                         endpoint=path,
-                        raw=payload,
+                        raw=row,
                     )
                 )
             except Exception as exc:
-                records.append(self.error_record(product, settle.upper(), path, exc))
+                records.append(self.error_record(product, symbol, path, exc))
         return records
 
 
@@ -751,6 +775,69 @@ class DeribitClient(ExchangeClient):
             raise RuntimeError(str(data))
         return data
 
+    @staticmethod
+    def _build_fee_records_from_summary(
+        account: str,
+        summary: Dict[str, object],
+        endpoint: str,
+    ) -> List[FeeRecord]:
+        records: List[FeeRecord] = []
+        fee_group = str(summary.get("fee_group", ""))
+        fees = summary.get("fees", {})
+        if not isinstance(fees, dict):
+            return records
+
+        product_name_map = {
+            ("usd", "future"): "BTC / ETH Futrue",
+            ("usd", "perpetual"): "BTC / ETH Perpetual",
+            ("usd", "option"): "BTC / ETH Option",
+            ("usdc", "future"): "USDC Future",
+            ("usdc", "perpetual"): "USDC Perpetual",
+        }
+
+        for symbol_key, symbol_fees in fees.items():
+            if not isinstance(symbol_fees, dict):
+                continue
+            quote = "usdc" if str(symbol_key).lower().endswith("usdc") else "usd"
+            for instrument_type, product_name in [
+                ("future", product_name_map.get((quote, "future"), "")),
+                ("perpetual", product_name_map.get((quote, "perpetual"), "")),
+                ("option", product_name_map.get((quote, "option"), "")),
+            ]:
+                if not product_name:
+                    continue
+                instrument_fees = symbol_fees.get(instrument_type)
+                if not isinstance(instrument_fees, dict):
+                    continue
+                default_fee = instrument_fees.get("default")
+                if not isinstance(default_fee, dict):
+                    continue
+                maker = str(default_fee.get("maker", ""))
+                taker = str(default_fee.get("taker", ""))
+                if maker == "" and taker == "":
+                    continue
+                records.append(
+                    FeeRecord.success(
+                        exchange="deribit",
+                        account=account,
+                        product=product_name,
+                        symbol=str(symbol_key).upper(),
+                        vip_level=fee_group,
+                        maker_rate=maker,
+                        taker_rate=taker,
+                        source="api",
+                        endpoint=endpoint,
+                        note="Parsed Deribit fees from account summary fees map.",
+                        raw={
+                            "symbol_key": symbol_key,
+                            "instrument_type": instrument_type,
+                            "default_fee": default_fee,
+                            "fee_group": fee_group,
+                        },
+                    )
+                )
+        return records
+
     def fetch(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
         try:
@@ -764,18 +851,22 @@ class DeribitClient(ExchangeClient):
             try:
                 payload = self._private_get(path, params, access_token)
                 row = payload.get("result", {})
+                parsed_rows = self._build_fee_records_from_summary(self.account, row, path)
+                if parsed_rows:
+                    records.extend(parsed_rows)
+                    continue
                 records.append(
                     FeeRecord.success(
                         exchange=self.exchange,
                         account=self.account,
                         product="Account Summary",
                         symbol=currency,
-                        vip_level="",
+                        vip_level=str(row.get("fee_group", "")),
                         maker_rate=str(row.get("maker_commission", "")),
                         taker_rate=str(row.get("taker_commission", "")),
                         source="api",
                         endpoint=path,
-                        note="Deribit returns account-level maker_commission and taker_commission by currency.",
+                        note="Deribit fallback to top-level maker_commission and taker_commission.",
                         raw=row,
                     )
                 )
