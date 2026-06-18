@@ -3,7 +3,7 @@ import os
 
 from exchange_fee.clients import TARGET_ACCOUNTS
 from exchange_fee.pipeline import collect_fee_artifacts, write_json, write_tsv
-from exchange_fee.slack_report import generate_report_artifacts, send_webhook_payloads
+from exchange_fee.slack_report import generate_report_artifacts, send_report_with_fallback
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +119,13 @@ def main() -> None:
     webhook_sent = False
     webhook_response = []
     if args.webhook_url and not args.dry_run:
-        webhook_response = send_webhook_payloads(args.webhook_url, report_artifacts["payloads"])
+        webhook_response = send_report_with_fallback(
+            args.webhook_url,
+            artifacts["normalized_live_rows"],
+            report_artifacts["changes"],
+            report_artifacts["report_time"],
+            report_artifacts["payloads"],
+        )
         webhook_sent = True
 
     print(f"Normalized snapshot : {DEFAULT_LIVE_NORMALIZED_JSON}")

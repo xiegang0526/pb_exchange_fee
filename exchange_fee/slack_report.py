@@ -13,6 +13,7 @@ import requests
 
 MAX_TABLE_ROWS_PER_MESSAGE = 99
 MAX_CHANGE_LINES_IN_MESSAGE = 20
+MAX_TEXT_ROWS_PER_MESSAGE = 40
 
 
 def format_report_date(dt: datetime) -> str:
@@ -131,6 +132,86 @@ def diff_normalized_rows(
 
 def _table_cell(text: str) -> dict[str, str]:
     return {"type": "raw_text", "text": text}
+
+
+def _truncate_cell(text: str, width: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def _render_text_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    widths = [18, 12, 24, 8, 12]
+    rendered_lines: list[str] = []
+    for index, row in enumerate(rows):
+        cells = [_truncate_cell(cell, widths[col]).ljust(widths[col]) for col, cell in enumerate(row)]
+        rendered_lines.append(" | ".join(cells))
+        if index == 0:
+            rendered_lines.append("-+-".join("-" * width for width in widths))
+    return "\n".join(rendered_lines)
+
+
+def build_fallback_text_payloads(
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+    report_time: datetime,
+) -> list[dict[str, object]]:
+    normalized_rows = _filter_normalized_rows(normalized_rows)
+    flattened_rows = flatten_table_rows(normalized_rows)
+    header_row = flattened_rows[0]
+    data_rows = flattened_rows[1:]
+    table_chunks = [
+        data_rows[index : index + (MAX_TEXT_ROWS_PER_MESSAGE * 2)]
+        for index in range(0, len(data_rows), MAX_TEXT_ROWS_PER_MESSAGE * 2)
+    ] or [[]]
+
+    payloads: list[dict[str, object]] = []
+    total_changes = len(changes)
+    preview_changes = changes[:MAX_CHANGE_LINES_IN_MESSAGE]
+
+    for index, chunk in enumerate(table_chunks, start=1):
+        parts: list[str] = []
+        title_suffix = f" ({index}/{len(table_chunks)})" if len(table_chunks) > 1 else ""
+        parts.append(f"Exchange Fee Daily Report{title_suffix}")
+        parts.append(f"Last updated: {format_report_date(report_time)}")
+        parts.append(f"Rows: {len(normalized_rows)} normalized products")
+        parts.append(f"Changes vs yesterday: {total_changes}")
+
+        if not normalized_rows:
+            parts.append(
+                "Data status: No valid fee rows were generated today. "
+                "Please check account credentials, Redis access, or upstream exchange APIs."
+            )
+
+        if total_changes:
+            parts.append("Fee changes vs yesterday:")
+            parts.extend(f"- {line}" for line in preview_changes)
+            if total_changes > len(preview_changes):
+                parts.append(f"- ... and {total_changes - len(preview_changes)} more changes")
+        else:
+            parts.append(
+                "Fee changes vs yesterday: "
+                + (
+                    "No valid fee rows today, so day-over-day diff was skipped."
+                    if not normalized_rows
+                    else "No fee changes detected."
+                )
+            )
+
+        if normalized_rows:
+            table_text = _render_text_table([header_row, *chunk])
+            parts.append("```")
+            parts.append(table_text)
+            parts.append("```")
+
+        payloads.append({"text": "\n".join(parts)})
+
+    return payloads
 
 
 def build_slack_payloads(
@@ -261,6 +342,36 @@ def send_webhook_payloads(webhook_url: str, payloads: Iterable[dict[str, object]
         )
         response.raise_for_status()
     return responses
+
+
+def send_report_with_fallback(
+    webhook_url: str,
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+    report_time: datetime,
+    primary_payloads: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    primary_payloads = primary_payloads or build_slack_payloads(normalized_rows, changes, report_time)
+    try:
+        responses = send_webhook_payloads(webhook_url, primary_payloads)
+        for response in responses:
+            response["payload_format"] = "blocks"
+        return responses
+    except requests.HTTPError as exc:
+        fallback_payloads = build_fallback_text_payloads(normalized_rows, changes, report_time)
+        fallback_responses = send_webhook_payloads(webhook_url, fallback_payloads)
+        result: list[dict[str, object]] = [
+            {
+                "payload_format": "blocks",
+                "status_code": exc.response.status_code if exc.response is not None else "",
+                "body": (exc.response.text[:1000] if exc.response is not None else str(exc)) or "",
+                "note": "Primary Slack blocks payload failed; fallback plain-text payload sent.",
+            }
+        ]
+        for response in fallback_responses:
+            response["payload_format"] = "text_fallback"
+        result.extend(fallback_responses)
+        return result
 
 
 def render_html_report(
