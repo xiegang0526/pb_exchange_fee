@@ -907,7 +907,8 @@ class KrakenSwapClient(ExchangeClient):
         params = params or {}
         nonce = str(int(time.time() * 1000))
         post_data = urlencode(params)
-        endpoint_path = f"/derivatives/api/v3{path}"
+        endpoint_path = f"/api/v3{path}"
+        request_path = f"/derivatives{endpoint_path}"
         secret = base64.b64decode(_get_required(self.credentials, "SECRET_KEY"))
         payload_to_hash = f"{post_data}{nonce}{endpoint_path}".encode()
         digest = hashlib.sha256(payload_to_hash).digest()
@@ -918,7 +919,7 @@ class KrakenSwapClient(ExchangeClient):
             "Nonce": nonce,
         }
         response = self.session.get(
-            f"{self.base_url}{endpoint_path}",
+            f"{self.base_url}{request_path}",
             params=params,
             headers=headers,
             timeout=DEFAULT_TIMEOUT,
