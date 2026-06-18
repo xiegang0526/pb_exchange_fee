@@ -309,6 +309,7 @@ def build_generic_webhook_payloads(
     for index, description in enumerate(descriptions, start=1):
         chunk_suffix = f" ({index}/{len(descriptions)})" if len(descriptions) > 1 else ""
         title = f"Exchange Fee Daily Report{chunk_suffix}"
+        chunk_topic = topic if len(descriptions) == 1 else f"{topic}-{report_date}-{index}"
         payloads.append(
             {
                 "title": title,
@@ -319,11 +320,12 @@ def build_generic_webhook_payloads(
                     "env": "production",
                     "app": "pb-exchange-fee",
                     "report_date": report_date,
-                    "topic": topic,
+                    "topic": chunk_topic,
+                    "chunk": str(index),
                 },
                 "groupKey": f"pb_exchange_fee:{report_date}:{index}",
-                "groupLabels": ["app", "env", "report_date"],
-                "topic": topic,
+                "groupLabels": ["app", "env", "report_date", "chunk"],
+                "topic": chunk_topic,
             }
         )
 
