@@ -13,7 +13,7 @@ import requests
 
 MAX_TABLE_ROWS_PER_MESSAGE = 99
 MAX_CHANGE_LINES_IN_MESSAGE = 20
-MAX_TEXT_ROWS_PER_MESSAGE = 40
+MAX_DESCRIPTION_CHARS = 2800
 DEFAULT_GENERIC_TOPIC = "pb-exchange-fee"
 
 
@@ -57,25 +57,96 @@ def _filter_normalized_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, st
     return [row for row in rows if _is_valid_normalized_row(row)]
 
 
+def _format_percent_display(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    if not cleaned.endswith("%"):
+        return cleaned
+    number = cleaned[:-1].strip()
+    if not number:
+        return ""
+    negative = number.startswith("-")
+    if negative:
+        number = number[1:]
+    if "." in number:
+        number = number.rstrip("0").rstrip(".")
+    if not number:
+        number = "0"
+    if negative and number != "0":
+        number = f"-{number}"
+    return f"{number}%"
+
+
+def _format_vip_display(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return "N/A"
+    return cleaned
+
+
+def _chunk_text_sections(sections: list[str], prefix_lines: list[str]) -> list[str]:
+    chunks: list[str] = []
+    current_lines = list(prefix_lines)
+
+    for section in sections:
+        candidate_lines = current_lines + ([""] if current_lines else []) + [section]
+        candidate_text = "\n".join(candidate_lines).strip()
+        if len(candidate_text) > MAX_DESCRIPTION_CHARS and current_lines != prefix_lines:
+            chunks.append("\n".join(current_lines).strip())
+            current_lines = list(prefix_lines) + [section]
+        else:
+            current_lines = candidate_lines
+
+    final_text = "\n".join(current_lines).strip()
+    if final_text:
+        chunks.append(final_text)
+    return chunks
+
+
+def _build_exchange_sections(normalized_rows: list[dict[str, str]]) -> list[str]:
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    order: list[tuple[str, str]] = []
+
+    for row in normalized_rows:
+        key = (row["exchange"], row["vip_tier"])
+        if key not in grouped:
+            order.append(key)
+        grouped[key].append(row)
+
+    sections: list[str] = []
+    for exchange, vip_tier in order:
+        rows = grouped[(exchange, vip_tier)]
+        vip_display = _format_vip_display(vip_tier)
+        vip_header = vip_display if vip_display.upper().startswith("VIP") else f"VIP {vip_display}"
+        lines = [f"{exchange} | {vip_header}"]
+        for row in rows:
+            maker = _format_percent_display(row["maker_rate_percent"])
+            taker = _format_percent_display(row["taker_rate_percent"])
+            lines.append(f"{row['product']}: Maker {maker}, Taker {taker}")
+        sections.append("\n".join(lines))
+    return sections
+
+
 def flatten_table_rows(normalized_rows: Iterable[dict[str, str]]) -> list[list[str]]:
     rows: list[list[str]] = [["Exchange", "VIP Tier", "Trading", "Fee Type", "Fee rate"]]
     for row in _filter_normalized_rows(normalized_rows):
         rows.append(
             [
                 row["exchange"],
-                row["vip_tier"],
+                _format_vip_display(row["vip_tier"]),
                 row["product"],
                 "Maker",
-                row["maker_rate_percent"],
+                _format_percent_display(row["maker_rate_percent"]),
             ]
         )
         rows.append(
             [
                 row["exchange"],
-                row["vip_tier"],
+                _format_vip_display(row["vip_tier"]),
                 row["product"],
                 "Taker",
-                row["taker_rate_percent"],
+                _format_percent_display(row["taker_rate_percent"]),
             ]
         )
     return rows
@@ -99,7 +170,8 @@ def diff_normalized_rows(
         if previous is None:
             changes.append(
                 f"{current['exchange']} | {current['product']} added: "
-                f"Maker {current['maker_rate_percent']}, Taker {current['taker_rate_percent']}"
+                f"Maker {_format_percent_display(current['maker_rate_percent'])}, "
+                f"Taker {_format_percent_display(current['taker_rate_percent'])}"
             )
             continue
 
@@ -111,12 +183,14 @@ def diff_normalized_rows(
         if current["maker_rate_percent"] != previous.get("maker_rate_percent", ""):
             changes.append(
                 f"{current['exchange']} | {current['product']} Maker: "
-                f"{previous.get('maker_rate_percent', '')} -> {current['maker_rate_percent']}"
+                f"{_format_percent_display(previous.get('maker_rate_percent', ''))} -> "
+                f"{_format_percent_display(current['maker_rate_percent'])}"
             )
         if current["taker_rate_percent"] != previous.get("taker_rate_percent", ""):
             changes.append(
                 f"{current['exchange']} | {current['product']} Taker: "
-                f"{previous.get('taker_rate_percent', '')} -> {current['taker_rate_percent']}"
+                f"{_format_percent_display(previous.get('taker_rate_percent', ''))} -> "
+                f"{_format_percent_display(current['taker_rate_percent'])}"
             )
 
     for key in sorted(previous_map):
@@ -124,8 +198,8 @@ def diff_normalized_rows(
             previous = previous_map[key]
             changes.append(
                 f"{previous['exchange']} | {previous['product']} removed "
-                f"(Maker {previous.get('maker_rate_percent', '')}, "
-                f"Taker {previous.get('taker_rate_percent', '')})"
+                f"(Maker {_format_percent_display(previous.get('maker_rate_percent', ''))}, "
+                f"Taker {_format_percent_display(previous.get('taker_rate_percent', ''))})"
             )
 
     return changes
@@ -163,56 +237,48 @@ def build_text_report_messages(
     report_time: datetime,
 ) -> list[str]:
     normalized_rows = _filter_normalized_rows(normalized_rows)
-    flattened_rows = flatten_table_rows(normalized_rows)
-    header_row = flattened_rows[0]
-    data_rows = flattened_rows[1:]
-    table_chunks = [
-        data_rows[index : index + (MAX_TEXT_ROWS_PER_MESSAGE * 2)]
-        for index in range(0, len(data_rows), MAX_TEXT_ROWS_PER_MESSAGE * 2)
-    ] or [[]]
-
-    messages: list[str] = []
     total_changes = len(changes)
-    preview_changes = changes[:MAX_CHANGE_LINES_IN_MESSAGE]
+    intro_lines = [
+        "Exchange Fee Daily Report",
+        f"Last updated: {format_report_date(report_time)}",
+        f"Rows: {len(normalized_rows)} normalized products",
+        f"Changes vs yesterday: {total_changes}",
+    ]
+    sections: list[str] = []
 
-    for index, chunk in enumerate(table_chunks, start=1):
-        parts: list[str] = []
-        title_suffix = f" ({index}/{len(table_chunks)})" if len(table_chunks) > 1 else ""
-        parts.append(f"Exchange Fee Daily Report{title_suffix}")
-        parts.append(f"Last updated: {format_report_date(report_time)}")
-        parts.append(f"Rows: {len(normalized_rows)} normalized products")
-        parts.append(f"Changes vs yesterday: {total_changes}")
+    if not normalized_rows:
+        sections.append(
+            "Data status\n"
+            "No valid fee rows were generated today. Please check account credentials, Redis access, or upstream exchange APIs."
+        )
 
-        if not normalized_rows:
-            parts.append(
-                "Data status: No valid fee rows were generated today. "
-                "Please check account credentials, Redis access, or upstream exchange APIs."
+    if total_changes:
+        change_lines = ["Fee changes vs yesterday", *[f"- {line}" for line in changes]]
+        sections.append("\n".join(change_lines))
+    else:
+        sections.append(
+            "Fee changes vs yesterday\n"
+            + (
+                "No valid fee rows today, so day-over-day diff was skipped."
+                if not normalized_rows
+                else "No fee changes detected."
             )
+        )
 
-        if total_changes:
-            parts.append("Fee changes vs yesterday:")
-            parts.extend(f"- {line}" for line in preview_changes)
-            if total_changes > len(preview_changes):
-                parts.append(f"- ... and {total_changes - len(preview_changes)} more changes")
-        else:
-            parts.append(
-                "Fee changes vs yesterday: "
-                + (
-                    "No valid fee rows today, so day-over-day diff was skipped."
-                    if not normalized_rows
-                    else "No fee changes detected."
-                )
-            )
+    sections.extend(_build_exchange_sections(normalized_rows))
+    messages = _chunk_text_sections(sections, intro_lines)
 
-        if normalized_rows:
-            table_text = _render_text_table([header_row, *chunk])
-            parts.append("```")
-            parts.append(table_text)
-            parts.append("```")
+    if len(messages) <= 1:
+        return messages
 
-        messages.append("\n".join(parts))
-
-    return messages
+    final_messages: list[str] = []
+    for index, message in enumerate(messages, start=1):
+        title = f"Exchange Fee Daily Report ({index}/{len(messages)})"
+        lines = message.splitlines()
+        if lines:
+            lines[0] = title
+        final_messages.append("\n".join(lines))
+    return final_messages
 
 
 def build_generic_webhook_payloads(
