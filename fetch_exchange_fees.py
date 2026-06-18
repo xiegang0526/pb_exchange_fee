@@ -1,13 +1,8 @@
 import argparse
-import csv
-import json
 import os
-from typing import Iterable, List, Mapping
 
-from exchange_fee.account_levels import apply_account_levels, build_account_level_rows
-from exchange_fee.clients import TARGET_ACCOUNTS, fetch_all_fee_records, fee_records_to_rows
-from exchange_fee.live_table import build_normalized_live_table
-from exchange_fee.reference_table import normalize_reference_table
+from exchange_fee.clients import TARGET_ACCOUNTS
+from exchange_fee.pipeline import collect_fee_artifacts, write_json, write_tsv
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,19 +15,41 @@ DEFAULT_LIVE_NORMALIZED_JSON = os.path.join(BASE_DIR, "exchange_fee.normalized.j
 DEFAULT_ACCOUNT_LEVELS_TSV = os.path.join(BASE_DIR, "exchange_account_levels.tsv")
 DEFAULT_ACCOUNT_LEVELS_JSON = os.path.join(BASE_DIR, "exchange_account_levels.json")
 
-
-def write_tsv(path: str, rows: List[Mapping[str, str]]) -> None:
-    if not rows:
-        return
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()), delimiter="\t")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_json(path: str, rows: Iterable[Mapping[str, str]]) -> None:
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(list(rows), handle, ensure_ascii=False, indent=2)
+FEE_ROW_FIELDS = [
+    "exchange",
+    "account",
+    "product",
+    "symbol",
+    "vip_level",
+    "maker_rate",
+    "taker_rate",
+    "maker_rate_percent",
+    "taker_rate_percent",
+    "source",
+    "endpoint",
+    "status",
+    "fetched_at",
+    "note",
+    "raw",
+]
+NORMALIZED_ROW_FIELDS = [
+    "exchange",
+    "vip_tier",
+    "product",
+    "maker_rate_percent",
+    "taker_rate_percent",
+    "maker_rate",
+    "taker_rate",
+]
+ACCOUNT_LEVEL_FIELDS = [
+    "exchange_key",
+    "exchange",
+    "account",
+    "account_level",
+    "level_source",
+    "matched_products",
+    "note",
+]
 
 
 def parse_account_overrides(items: list[str]) -> dict[str, str]:
@@ -100,19 +117,18 @@ def main() -> None:
     accounts = dict(TARGET_ACCOUNTS)
     accounts.update(parse_account_overrides(args.account))
 
-    reference_rows = normalize_reference_table(args.reference)
-    fee_records = fetch_all_fee_records(accounts)
-    account_level_rows = build_account_level_rows(fee_records, reference_rows)
-    fee_records = apply_account_levels(fee_records, account_level_rows)
-    fee_rows = fee_records_to_rows(fee_records)
-    normalized_live_rows = build_normalized_live_table(fee_records, reference_rows)
+    artifacts = collect_fee_artifacts(args.reference, accounts)
+    fee_rows = artifacts["fee_rows"]
+    reference_rows = artifacts["reference_rows"]
+    normalized_live_rows = artifacts["normalized_live_rows"]
+    account_level_rows = artifacts["account_level_rows"]
 
-    write_tsv(args.output_tsv, fee_rows)
+    write_tsv(args.output_tsv, fee_rows, FEE_ROW_FIELDS)
     write_json(args.output_json, fee_rows)
-    write_tsv(args.reference_output, reference_rows)
-    write_tsv(args.normalized_output_tsv, normalized_live_rows)
+    write_tsv(args.reference_output, reference_rows, NORMALIZED_ROW_FIELDS)
+    write_tsv(args.normalized_output_tsv, normalized_live_rows, NORMALIZED_ROW_FIELDS)
     write_json(args.normalized_output_json, normalized_live_rows)
-    write_tsv(args.account_levels_tsv, account_level_rows)
+    write_tsv(args.account_levels_tsv, account_level_rows, ACCOUNT_LEVEL_FIELDS)
     write_json(args.account_levels_json, account_level_rows)
 
     ok_count = sum(1 for row in fee_rows if row["status"] == "ok")

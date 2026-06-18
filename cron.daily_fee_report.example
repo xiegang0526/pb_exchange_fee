@@ -1,0 +1,2 @@
+TZ=Asia/Shanghai
+30 9 * * * cd /home/trader/pb_exchange_fee && FEE_REPORT_WEBHOOK_URL="replace-with-your-webhook-url" /usr/bin/python3 send_slack_fee_report.py >> /home/trader/pb_exchange_fee/logs/daily_fee_report.log 2>&1

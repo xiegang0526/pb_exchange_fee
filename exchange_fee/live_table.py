@@ -78,12 +78,27 @@ def _record_score(record: FeeRecord, preferred_symbols: List[str]) -> Tuple[int,
     return success_score, symbol_score
 
 
+def _has_rate_values(record: FeeRecord) -> bool:
+    return bool(
+        (record.maker_rate or "").strip()
+        or (record.taker_rate or "").strip()
+        or (record.maker_rate_percent or "").strip()
+        or (record.taker_rate_percent or "").strip()
+    )
+
+
+def _is_usable_record(record: FeeRecord) -> bool:
+    return bool((record.product or "").strip()) and _has_rate_values(record)
+
+
 def build_normalized_live_table(
     records: Iterable[FeeRecord],
     reference_rows: List[Dict[str, str]],
 ) -> List[Dict[str, str]]:
     grouped: Dict[Tuple[str, str], List[FeeRecord]] = defaultdict(list)
     for record in records:
+        if not (record.product or "").strip():
+            continue
         grouped[(record.exchange, record.product)].append(record)
 
     reference_order = {
@@ -127,7 +142,7 @@ def build_normalized_live_table(
             continue
 
         actual = best_actual_rows.get((exchange_key, product))
-        if actual is not None and actual.status == "ok":
+        if actual is not None and actual.status == "ok" and _is_usable_record(actual):
             normalized_rows.append(
                 {
                     "exchange": display_exchange,
@@ -159,15 +174,16 @@ def build_normalized_live_table(
         display_exchange = _display_exchange_name(exchange)
         if (display_exchange, product) in emitted_keys:
             continue
+        if chosen.status != "ok" or not _is_usable_record(chosen):
+            continue
         inferred_vip = ""
-        if chosen.status == "ok":
-            inferred_vip = _infer_vip_tier(
-                display_exchange,
-                product,
-                chosen.maker_rate,
-                chosen.taker_rate,
-                reference_rows,
-            )
+        inferred_vip = _infer_vip_tier(
+            display_exchange,
+            product,
+            chosen.maker_rate,
+            chosen.taker_rate,
+            reference_rows,
+        )
         normalized_rows.append(
             {
                 "exchange": display_exchange,

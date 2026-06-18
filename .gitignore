@@ -4,3 +4,10 @@ __pycache__/
 exchange_fee_snapshot.tsv
 exchange_fee_snapshot.json
 tablefee.normalized.tsv
+exchange_fee.normalized.tsv
+exchange_fee.normalized.json
+exchange_account_levels.tsv
+exchange_account_levels.json
+history/
+reports/
+logs/
