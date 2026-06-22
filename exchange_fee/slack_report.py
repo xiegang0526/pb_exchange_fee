@@ -13,7 +13,7 @@ import requests
 
 MAX_TABLE_ROWS_PER_MESSAGE = 99
 MAX_CHANGE_LINES_IN_MESSAGE = 20
-MAX_DESCRIPTION_CHARS = 2800
+MAX_DESCRIPTION_CHARS = 1200
 MAX_EXCHANGE_SECTIONS_PER_MESSAGE = 3
 DEFAULT_GENERIC_TOPIC = "pb-exchange-fee"
 
@@ -105,6 +105,28 @@ def _chunk_text_sections(sections: list[str], prefix_lines: list[str]) -> list[s
     return chunks
 
 
+def _chunk_bullet_lines(header: str, bullet_lines: list[str], prefix_lines: list[str]) -> list[str]:
+    if not bullet_lines:
+        return _chunk_text_sections([header], prefix_lines)
+
+    chunks: list[str] = []
+    current_lines = list(prefix_lines) + [header]
+
+    for bullet in bullet_lines:
+        candidate_lines = current_lines + [bullet]
+        candidate_text = "\n".join(candidate_lines).strip()
+        if len(candidate_text) > MAX_DESCRIPTION_CHARS and len(current_lines) > len(prefix_lines) + 1:
+            chunks.append("\n".join(current_lines).strip())
+            current_lines = list(prefix_lines) + [header, bullet]
+        else:
+            current_lines = candidate_lines
+
+    final_text = "\n".join(current_lines).strip()
+    if final_text:
+        chunks.append(final_text)
+    return chunks
+
+
 def _build_exchange_sections(normalized_rows: list[dict[str, str]]) -> list[str]:
     grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     order: list[tuple[str, str]] = []
@@ -127,6 +149,20 @@ def _build_exchange_sections(normalized_rows: list[dict[str, str]]) -> list[str]
             lines.append(f"{row['product']}: Maker {maker}, Taker {taker}")
         sections.append("\n".join(lines))
     return sections
+
+
+def _report_intro_lines(
+    title: str,
+    report_time: datetime,
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+) -> list[str]:
+    return [
+        title,
+        f"Last updated: {format_report_date(report_time)}",
+        f"Rows: {len(normalized_rows)} normalized products",
+        f"Changes vs yesterday: {len(changes)}",
+    ]
 
 
 def flatten_table_rows(normalized_rows: Iterable[dict[str, str]]) -> list[list[str]]:
@@ -232,84 +268,100 @@ def _render_text_table(rows: list[list[str]]) -> str:
     return "\n".join(rendered_lines)
 
 
-def build_text_report_messages(
+def build_change_report_messages(
     normalized_rows: list[dict[str, str]],
     changes: list[str],
     report_time: datetime,
 ) -> list[str]:
     normalized_rows = _filter_normalized_rows(normalized_rows)
-    total_changes = len(changes)
-    intro_lines = [
-        "Exchange Fee Daily Report",
-        f"Last updated: {format_report_date(report_time)}",
-        f"Rows: {len(normalized_rows)} normalized products",
-        f"Changes vs yesterday: {total_changes}",
-    ]
-    preamble_sections: list[str] = []
+    intro_lines = _report_intro_lines("Exchange Fee Changes", report_time, normalized_rows, changes)
 
     if not normalized_rows:
-        preamble_sections.append(
-            "Data status\n"
-            "No valid fee rows were generated today. Please check account credentials, Redis access, or upstream exchange APIs."
+        return _chunk_text_sections(
+            [
+                "Data status\n"
+                "No valid fee rows were generated today. Please check account credentials, Redis access, or upstream exchange APIs."
+            ],
+            intro_lines,
         )
 
-    if total_changes:
-        change_lines = ["Fee changes vs yesterday", *[f"- {line}" for line in changes]]
-        preamble_sections.append("\n".join(change_lines))
-    else:
-        preamble_sections.append(
-            "Fee changes vs yesterday\n"
-            + (
-                "No valid fee rows today, so day-over-day diff was skipped."
-                if not normalized_rows
-                else "No fee changes detected."
-            )
-        )
+    if not changes:
+        return _chunk_text_sections(["Fee changes vs yesterday\nNo fee changes detected."], intro_lines)
 
-    exchange_sections = _build_exchange_sections(normalized_rows)
-
-    if not exchange_sections:
-        messages = _chunk_text_sections(preamble_sections, intro_lines)
-    else:
-        messages = []
-        for index in range(0, len(exchange_sections), MAX_EXCHANGE_SECTIONS_PER_MESSAGE):
-            exchange_chunk = exchange_sections[index : index + MAX_EXCHANGE_SECTIONS_PER_MESSAGE]
-            if index == 0:
-                chunk_sections = [*preamble_sections, *exchange_chunk]
-            else:
-                chunk_sections = exchange_chunk
-            messages.extend(_chunk_text_sections(chunk_sections, intro_lines))
+    bullet_lines = [f"- {line}" for line in changes]
+    messages = _chunk_bullet_lines("Fee changes vs yesterday", bullet_lines, intro_lines)
 
     if len(messages) <= 1:
         return messages
 
     final_messages: list[str] = []
     for index, message in enumerate(messages, start=1):
-        title = f"Exchange Fee Daily Report ({index}/{len(messages)})"
         lines = message.splitlines()
         if lines:
-            lines[0] = title
+            lines[0] = f"Exchange Fee Changes ({index}/{len(messages)})"
         final_messages.append("\n".join(lines))
     return final_messages
 
 
-def build_generic_webhook_payloads(
+def build_detail_report_messages(
     normalized_rows: list[dict[str, str]],
     changes: list[str],
     report_time: datetime,
-    *,
-    topic: str = DEFAULT_GENERIC_TOPIC,
-) -> list[dict[str, object]]:
-    descriptions = build_text_report_messages(normalized_rows, changes, report_time)
-    report_date = report_time.date().isoformat()
-    has_valid_rows = bool(_filter_normalized_rows(normalized_rows))
-    urgency = "p1" if not has_valid_rows else "p2"
+) -> list[str]:
+    normalized_rows = _filter_normalized_rows(normalized_rows)
+    intro_lines = _report_intro_lines("Exchange Fee Details", report_time, normalized_rows, changes)
 
+    if not normalized_rows:
+        return _chunk_text_sections(
+            [
+                "Data status\n"
+                "No valid fee rows were generated today. Please check account credentials, Redis access, or upstream exchange APIs."
+            ],
+            intro_lines,
+        )
+
+    exchange_sections = _build_exchange_sections(normalized_rows)
+    messages: list[str] = []
+    for index in range(0, len(exchange_sections), MAX_EXCHANGE_SECTIONS_PER_MESSAGE):
+        exchange_chunk = exchange_sections[index : index + MAX_EXCHANGE_SECTIONS_PER_MESSAGE]
+        messages.extend(_chunk_text_sections(exchange_chunk, intro_lines))
+
+    if len(messages) <= 1:
+        return messages
+
+    final_messages: list[str] = []
+    for index, message in enumerate(messages, start=1):
+        lines = message.splitlines()
+        if lines:
+            lines[0] = f"Exchange Fee Details ({index}/{len(messages)})"
+        final_messages.append("\n".join(lines))
+    return final_messages
+
+
+def build_text_report_messages(
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+    report_time: datetime,
+) -> list[str]:
+    return [*build_change_report_messages(normalized_rows, changes, report_time), *build_detail_report_messages(normalized_rows, changes, report_time)]
+
+
+def _build_generic_payloads(
+    descriptions: list[str],
+    report_time: datetime,
+    *,
+    title_base: str,
+    message_type: str,
+    urgency: str,
+    topic: str,
+) -> list[dict[str, object]]:
+    report_date = report_time.date().isoformat()
     payloads: list[dict[str, object]] = []
+
     for index, description in enumerate(descriptions, start=1):
         chunk_suffix = f" ({index}/{len(descriptions)})" if len(descriptions) > 1 else ""
-        title = f"Exchange Fee Daily Report{chunk_suffix}"
-        chunk_topic = topic if len(descriptions) == 1 else f"{topic}-{report_date}-{index}"
+        title = f"{title_base}{chunk_suffix}"
+        chunk_topic = f"{topic}-{report_date}-{message_type}-{index}"
         payloads.append(
             {
                 "title": title,
@@ -321,15 +373,44 @@ def build_generic_webhook_payloads(
                     "app": "pb-exchange-fee",
                     "report_date": report_date,
                     "topic": chunk_topic,
+                    "message_type": message_type,
                     "chunk": str(index),
                 },
-                "groupKey": f"pb_exchange_fee:{report_date}:{index}",
-                "groupLabels": ["app", "env", "report_date", "chunk"],
+                "groupKey": f"pb_exchange_fee:{report_date}:{message_type}:{index}",
+                "groupLabels": ["app", "env", "report_date", "message_type", "chunk"],
                 "topic": chunk_topic,
             }
         )
 
     return payloads
+
+
+def build_generic_webhook_payloads(
+    normalized_rows: list[dict[str, str]],
+    changes: list[str],
+    report_time: datetime,
+    *,
+    topic: str = DEFAULT_GENERIC_TOPIC,
+) -> list[dict[str, object]]:
+    has_valid_rows = bool(_filter_normalized_rows(normalized_rows))
+    urgency = "p1" if not has_valid_rows else "p2"
+    change_payloads = _build_generic_payloads(
+        build_change_report_messages(normalized_rows, changes, report_time),
+        report_time,
+        title_base="Exchange Fee Changes",
+        message_type="changes",
+        urgency=urgency,
+        topic=topic,
+    )
+    detail_payloads = _build_generic_payloads(
+        build_detail_report_messages(normalized_rows, changes, report_time),
+        report_time,
+        title_base="Exchange Fee Details",
+        message_type="detail",
+        urgency=urgency,
+        topic=topic,
+    )
+    return [*change_payloads, *detail_payloads]
 
 
 def build_slack_payloads(
