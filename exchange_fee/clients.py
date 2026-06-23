@@ -19,12 +19,12 @@ from .models import FeeRecord
 TARGET_ACCOUNTS = {
     "bitget": "mpusstockbg28",
     "bybit": "mpusstockbybit45",
-    "binance": "mpbncrossarb85",
+    "binance": "mpbnellenmm85",
     "gate": "mpusstockgate52",
     "kucoin": "mpusstockkucoin23",
     "okex": "mpusstockokx45",
     "deribit": "mpusstockderibit15",
-    "coinbase": "mpflyottercoinb07",
+    "coinbase": "mpusstockcb11",
     "krakenspot": "mpusstockkraken14",
     "krakenswap": "mpusstockkraken14",
 }
