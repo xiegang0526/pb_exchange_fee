@@ -63,6 +63,13 @@ def _percent_string_to_decimal(rate_percent: str) -> str:
     return f"{float(cleaned) / 100:.8f}".rstrip("0").rstrip(".")
 
 
+def _absolute_decimal_string(rate: object) -> str:
+    cleaned = str(rate).strip()
+    if cleaned == "":
+        return ""
+    return f"{abs(float(cleaned)):.10f}".rstrip("0").rstrip(".")
+
+
 class ExchangeClient:
     exchange = ""
 
@@ -717,6 +724,17 @@ class OKXClient(ExchangeClient):
             raise RuntimeError(str(data))
         return data
 
+    @staticmethod
+    def _extract_fee_rate(row: Dict[str, object], side: str) -> str:
+        fee_groups = row.get("feeGroup", [])
+        if isinstance(fee_groups, list) and fee_groups:
+            first_group = fee_groups[0]
+            if isinstance(first_group, dict) and first_group.get(side) not in (None, ""):
+                # OKX trade-fee docs define negative as commission and positive as rebate.
+                # Normalize to positive fee values to match the local reference fee table.
+                return _absolute_decimal_string(first_group.get(side, ""))
+        return _absolute_decimal_string(row.get(side, ""))
+
     def fetch(self) -> List[FeeRecord]:
         records: List[FeeRecord] = []
         targets = [
@@ -744,10 +762,14 @@ class OKXClient(ExchangeClient):
                         product=target.product,
                         symbol=target.symbol,
                         vip_level=str(row.get("level", "")),
-                        maker_rate=str(row.get("maker", "")),
-                        taker_rate=str(row.get("taker", "")),
+                        maker_rate=self._extract_fee_rate(row, "maker"),
+                        taker_rate=self._extract_fee_rate(row, "taker"),
                         source="api",
                         endpoint=path,
+                        note=(
+                            "OKX /api/v5/account/trade-fee returns negative numbers for commission "
+                            "and positive numbers for rebate. Output normalized to positive fee values."
+                        ),
                         raw=row,
                     )
                 )
